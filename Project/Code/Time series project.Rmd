@@ -1,0 +1,91 @@
+---
+title: "Time series project"
+author: "Balaji Avvaru"
+date: "7/15/2020"
+output: html_document
+---
+### EDA
+  a.	Identify yourself and your partner (if applicable).  Goal 1
+  b.	Describe the Data Set / Time Series (Who, What, When, Where, Why and How) Goal 1
+  c.	Stationary / Non-Stationary Goal 2
+  d.	ACFs and Spectral Densities just to explore Goal 2
+  e.	At least 2 (total) candidate ARMA / ARIMA models (univariate) Goal 2
+    a.	The models in factored form or at least separate the stationary and non-
+        stationary factors with standard deviation or variance of the white noise.
+    b.	AIC
+    c.	ASE (Rolling window)
+    d.	Visualization of Forecasts (Short and Long Term / State and National) 
+  f.	Strategy / Plans for the rest of the analysis.
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(readr)
+library(readxl)
+library(tswge)
+library(plyr)
+library(dplyr)
+library(ggplot2)
+```
+
+
+**Read in the data**  
+```{r Read in, echo=FALSE}
+setwd("C:/Users/BelajiAvvaru/Desktop/Docs/SMU/MSDS 6373/Project/")
+#Read in the data
+Covid19data <- read.csv(file.choose(),header=TRUE)
+str(Covid19data)
+
+Covid19data_new = Covid19data[ , c('date', 'state', 'positive', 'negative', 'death')]
+str(Covid19data_new)
+
+Covid19data_new1 = Covid19data_new %>% filter(state == 'WA' & date > 20200301)
+Covid19data_new1$positivePer = (Covid19data_new1$positive / (Covid19data_new1$positive + Covid19data_new1$negative)) * 100
+
+dim(Covid19data_new1)
+
+Covid19data_new12 = Covid19data_new1[order(Covid19data_new1$date),]
+
+```
+
+
+### Describe Data Set  
+####Time Series (Who, What, When, Where, Why and How)
+
+This is a time series data set downloaded from https://covidtracking.com/data/download. The data set is a record of the cumulative number of positive cases, cumulative number of negative cases, cumulative number of death over the time for all states in the United States. This was collected from January 22nd, 2020 through July 14th, 2020 and consists of 7354 entries for all states and 175 entries for Washington state.
+
+``` {r Visual}
+cases = Covid19data_new12$positive
+deaths = Covid19data_new12$death
+perpositive = Covid19data_new12$positivePer
+
+plotts.sample.wge(cases)
+
+```
+
+``` {r model}
+Covid19data.d1 = artrans.wge(cases,phi.tr = 1)
+
+plotts.sample.wge(Covid19data.d1)
+
+aic5.wge(Covid19data.d1, p=0:5, q=0:3)
+
+Covid19data.d2 = artrans.wge(Covid19data.d1,0.45)
+
+plotts.sample.wge(Covid19data.d2, arlimits = T)
+
+aic5.wge(Covid19data.d2, p=0:5, q=0:3, type='bic')
+
+
+
+
+p2=aic.wge(Covid19data.d2,p=0:5,q=0:3)
+# aic picks p=2
+x2.est=est.ar.wge(Covid19data.d2,p=p2$p)
+
+Covid19data.d2 = artrans.wge(Covid19data.d1,p2$p)
+
+ljung.wge(Covid19data.d2,p=1, q=1, K=48)
+
+
+```
