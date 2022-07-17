@@ -1,0 +1,479 @@
+---
+title: "MSDS 6373 Covid Project"
+author: "Balaji Avvaru"
+date: "8/4/2020"
+output: html_document
+---
+
+### Time series analysis on COVID data for US ###
+### Response variable is number of new daily cases
+### EDA
+  a.	Identify yourself and your partner (if applicable).  Goal 1
+  b.	Describe the Data Set / Time Series (Who, What, When, Where, Why and How) Goal 1
+  c.	Stationary / Non-Stationary Goal 2
+  d.	ACFs and Spectral Densities just to explore Goal 2
+  e.	At least 2 (total) candidate ARMA / ARIMA models (univariate) Goal 2
+    a.	The models in factored form or at least separate the stationary and non-
+        stationary factors with standard deviation or variance of the white noise.
+    b.	AIC
+    c.	ASE (Rolling window)
+    d.	Visualization of Forecasts (Short and Long Term / State and National) 
+  f.	Strategy / Plans for the rest of the analysis.
+
+```{r setup, include=FALSE}
+library(tswge)
+library(dplyr)
+library(ggplot2)
+library(tseries)
+library(nnfor)
+library(corrgram)
+library(GGally)
+library(vars)
+```
+
+****** Read Covid data ******** 
+Covid data downloded from : https://covidtracking.com/data/download 
+```{r Read}
+setwd("C:/Users/BelajiAvvaru/Desktop/Docs/SMU/MSDS 6373/Project/")
+#Read in the data
+USCovid19data <- read.csv(file.choose(),header=TRUE)
+dim(USCovid19data)
+```
+
+****** Read mobility data ******** 
+Mobility data downloded from https://data.bts.gov/Research-and-Statistics/Trips-by-Distance/w96p-f2qv
+
+```{r read mobility}
+USmobilitydata <- read.csv(file.choose(),header=TRUE)
+dim(USmobilitydata)
+```
+
+### Describe Covid Data Set  
+
+This is a time series data set downloaded from https://covidtracking.com/data/download. The data set is a record of the cumulative number of positive cases, cumulative number of negative cases, cumulative number of death over the time for all states in the United States. This was collected from January 22nd, 2020 through august 3rd, 2020 and consists of 195 entries for Washington state. Computed number of new cases, total daily cases and positive percentage
+
+There are three different correlation structures in the covid data, due to lack of tests and also lack of reporing, initial correlation structure is one kind. From 02/29 to 06/01, there is another correlation structure. After 06/01 I see different correlation structure as number of test increased which results in more number of positive cases. forecasting will following latest trend, using data from 06/01 to 07/25 which will helpful in creating accurate model for forecasting with latest trends. 
+
+*** tidy covid data **
+```{r tidy covid}
+USCoviddata = USCovid19data[ , c('date', 'positive', 'negative', 'death')]
+# Question on interest is to analyze Washington state Covid data, get Washington state data after 06/15/2020
+Coviddata_US <- USCoviddata %>% filter(date >= 20200601 & date <= 20200725)
+# Arrange the data in the ascending order based on date
+Coviddata_US <-  Coviddata_US[order(Coviddata_US$date),]
+# Create new column for "new cases" by taking first difference 
+Coviddata_US <- Coviddata_US %>% mutate(new_cases = c(positive[1],diff(positive)))
+# Create new column for "Positive percentage"
+Coviddata_US$positivePer <- (Coviddata_US$positive / (Coviddata_US$positive + Coviddata_US$negative)) * 100
+# create new column for new negative cases
+Coviddata_US <- Coviddata_US %>% mutate(new_negative = c(negative[1],diff(negative)))
+# create new column for total cases
+Coviddata_US$totalcases = Coviddata_US$new_cases + Coviddata_US$new_negative
+Coviddata_US = transform(Coviddata_US, date=as.Date(as.character(date), "%Y%m%d"))
+
+
+Coviddata_US$new_cases[1] = 20415
+Coviddata_US$totalcases[1] = 374532
+
+```
+
+### Describe Mobility Data Set  
+
+This is a daily data set downloaded from https://data.bts.gov/Research-and-Statistics/Trips-by-Distance/w96p-f2qv. The data set is a record of the number of people staying at home, number of people not staying at home, number of people had trips less than 1 mile, number of people had trips between 1 and 3 miles, number of people had trips between 3 and 5 miles, number of people had trips between 5  and 10 miles and number of people had trips between 10 and 25 miles. Used this data set in multivariate analysis to better forecast number new Covid cases in Washington state and US.  
+
+*** tidy mobility data ** 
+```{r tidy mobility}
+USmobilitydata2020 = USmobilitydata[ , c('Date', 'Level', 'State.Postal.Code',  'Population.Staying.at.Home',
+                                     'Population.Not.Staying.at.Home', 'Number.of.Trips',
+                                     'Number.of.Trips..1', 'Number.of.Trips.3.5',
+                                     'Number.of.Trips.1.3', 'Number.of.Trips.5.10',
+                                     'Number.of.Trips.10.25')]
+# remove rows with NA values
+USmobilitydata2020 <- na.omit(USmobilitydata2020) 
+
+USmobilitydata2020$Date = as.Date(USmobilitydata2020$Date, format="%Y/%m/%d")
+
+# Question on interest is to analyze Washington state Covid data, get Washington state data after 02/29/2020 
+mobilitydata2020_US <- USmobilitydata2020 %>% filter(Level == 'County' & Date >= '2020-06-01')
+# Arrange the data in ascending order 
+mobilitydata2020_US <-  mobilitydata2020_US[order(mobilitydata2020_US$Date),]
+dim(mobilitydata2020_US)
+
+# Group by date of mobility data
+mobilitydata2020_US_Sum <- mobilitydata2020_US %>% dplyr::group_by(Date) %>%
+  dplyr::summarize(athomeus = sum(Population.Staying.at.Home), 
+            notathomeus = sum(Population.Not.Staying.at.Home),
+            num_tripsus = sum(Number.of.Trips),
+            tripslessthan1mileus = sum(Number.of.Trips..1),
+            trips1to3milesus = sum(Number.of.Trips.1.3),
+            trips3to5milesus = sum (Number.of.Trips.3.5),
+            trips5to10milesus = sum(Number.of.Trips.5.10),
+            trips10to25milesus = sum (Number.of.Trips.10.25))
+
+## data is missing for July 4th week from 06/28 to 7/4. Impute mean values for these dates
+NA2mean <- function(x) replace(x, is.na(x), mean(x, na.rm = TRUE))
+mobilitydata2020_US_Sum <- replace(mobilitydata2020_US_Sum, TRUE, lapply(mobilitydata2020_US_Sum, NA2mean))
+
+# verify any null values 
+new_DF <- mobilitydata2020_US_Sum[rowSums(is.na(mobilitydata2020_US_Sum)) > 0,]
+new_DF
+
+tail(mobilitydata2020_US_Sum)
+
+```
+
+*** Merge Covid data and Mobility data by date ** 
+```{r merge}
+Covid_mobility_US <- merge(Coviddata_US, mobilitydata2020_US_Sum, by.x = "date", 
+                   by.y = "Date", all.x = TRUE)
+
+dim(Covid_mobility_US)
+```
+
+### check whether data comes from stationary model or non-Stationary model
+
+Constant Mean:Number of new cases increasing over time. Last 10 days new cases increasing rapidly. Over this time frame, there is evidence that the condition is not met because the mean appears higher at the end of the series than at the beginning.
+
+Constant Variance: Over this time frame, there is evidence that the condition is not met because the variance appears fluctuating over the time.
+
+Constant Auto correlations: Judging from the ACFs of the first half and the second half of the series, we see that there is strong evidence that the autocorrelations depend on time.
+
+``` {r Visual}
+dim(Coviddata_US)
+# New cases Realization
+plotts.wge(Coviddata_US$new_cases)
+# Check ACF and Spectral density plots
+plotts.sample.wge(Coviddata_US$new_cases)
+# Auto correlations of first half of data
+acf(Coviddata_US$new_cases[1:27])
+# Auto correlations of second half of data
+acf(Coviddata_US$new_cases[28:50])
+```
+
+### UNIVARIATE ANALYSIS ###
+
+``` {r ARIMA model}
+## Auto correlations are slowly damping.
+## Dickey-Fuller test to see whether there is any root on unit circle or not
+plotts.sample.wge(Coviddata_US$new_cases)
+adf.test(Coviddata_US$new_cases) 
+
+## p-value = 0.147, fail to reject null, which is evident that there is a root on unit circle. Proceed with ARIMA model 
+
+Coviddata_US.d1 = artrans.wge(Coviddata_US$new_cases,phi.tr = 1)
+
+## ACFs of  differenced  data with d=1 doesn't look like white
+plotts.sample.wge(Coviddata_US.d1, arlimits = T)
+
+
+# use AIC5 to get lowest AIC to model the differenced data
+aic5.wge(Coviddata_US.d1, p=0:7, q=0:2,type="aic")
+## Top 2 models are ARMA(7,1) and AR(7)
+
+aic5.wge(Coviddata_US.d1, p=0:7, q=0:2,type="bic")
+## Top 2 models are AR(7) and ARMA(7,1)
+
+# Selected AR(7)
+
+# AR(2) model estimates
+ar7.est=est.ar.wge(Coviddata_US.d1,p=7)
+
+Coviddata_US.d1.AR7 = artrans.wge(Coviddata_US.d1,phi.tr = ar7.est$phi)
+
+## ACFs of  differenced  data with AR(2) shows white
+plotts.sample.wge(Coviddata_US.d1.AR7, arlimits = T)
+
+ljung.wge(Coviddata_US.d1.AR7, K=24)
+## $pval  :0.951
+
+## Ljung box test with K=24  fail to reject null hypothesis which is evident that the residuals are white
+
+# Next 7 forecasts with AR(2) model
+fore.aruma.wge(Coviddata_US$new_cases, phi = ar7.est$phi,d=1, n.ahead = 7, limits=T)
+
+# Next 60 forecasts with AR(2) model
+fore.aruma.wge(Coviddata_US$new_cases, phi = ar7.est$phi,d=1, n.ahead = 60, limits=T)
+
+
+# ASE 
+Coviddata_US.d1.ar7.forecasts = fore.aruma.wge(Coviddata_US$new_cases, phi = ar7.est$phi, d=1,lastn = T, n.ahead = 7)
+Coviddata_US.d1.ar7.ase = mean((Coviddata_US$new_cases[(49-7+1):55] - Coviddata_US.d1.ar7.forecasts$f)^2)
+Coviddata_US.d1.ar7.ase
+
+# ASE : 23518917
+#Plot
+ggplot() +
+  geom_line(aes(x=seq(1,55,1), y=Coviddata_US$new_cases, group = 1), 
+             color = "blue", size=1) +
+  geom_line(aes(x=seq(49,55,1), y=Coviddata_US.d1.ar7.forecasts$f, group = 1), 
+             color = "red", size=1) +
+  geom_line(aes(x=seq(49,55,1), y=Coviddata_US.d1.ar7.forecasts$ll, group = 1), 
+             color = "grey", size=1) +
+  geom_line(aes(x=seq(49,55,1), y=Coviddata_US.d1.ar7.forecasts$ul, group = 1), 
+             color = "grey", size=1) +
+  xlab("Date") +
+  ylab("New cases") +
+  ggtitle("Last 7 days Forecasts with ARIMA")
+
+# Rolling window ASE
+
+trainingSize = 20
+horizon = 7
+US.d1.ar7.ASEHolder = numeric()
+
+for( i in 1:(55-(trainingSize + horizon) + 1))
+{
+  
+  forecasts = fore.aruma.wge(Coviddata_US$new_cases[i:(i+(trainingSize-1))],
+                            phi = ar7.est$phi, d=1,n.ahead = horizon, plot=F)
+  
+  ASE = mean((Coviddata_US$new_cases[(trainingSize+i):(trainingSize+ i + (horizon) - 1)] - forecasts$f)^2)
+  
+  US.d1.ar7.ASEHolder[i] = ASE
+  
+}
+
+US.d1.ar7.ASEHolder
+hist(US.d1.ar7.ASEHolder)
+US.d1.ar7.WindowedASE = mean(US.d1.ar7.ASEHolder)
+
+summary(US.d1.ar7.ASEHolder)
+US.d1.ar7.WindowedASE
+
+## Rolling window ASE :50233680
+```
+``` {r MLP model}
+# univariate MLP model
+fit.mlp.uni.US = mlp(ts(Coviddata_US$new_cases),reps = 100,comb = "median")
+fit.mlp.uni.US
+plot(fit.mlp.uni.US)
+# Forecasting next 7 days
+US.uni.fore7.mlp = forecast(fit.mlp.uni.US, h = 7)
+plot(US.uni.fore7.mlp)
+
+# Forecasting next 60 days
+US.uni.fore60.mlp = forecast(fit.mlp.uni.US, h = 60)
+plot(US.uni.fore60.mlp)
+
+# ASE for entire data set (Rolling window ASE)
+NN_uni_US_fitted = fitted(fit.mlp.uni.US)
+fit.mlp.uni.US$fitted
+
+# Plot with original and fitted values
+ggplot() +
+  geom_line(aes(x=seq(1,55,1), y=Coviddata_US$new_cases, group = 1), 
+             color = "blue", size=1) +
+  geom_line(aes(x=seq(5,55,1), y=NN_uni_US_fitted, group = 1), 
+             color = "red", size=1) +
+  xlab("Date") +
+  ylab("New cases") +
+  ggtitle("Original Vs Fitted with MLP")
+
+
+NN_uni_US_ase = mean((Coviddata_US$new_cases[5:55]-NN_uni_US_fitted)^2)
+NN_uni_US_ase
+# 17386024
+```
+
+### ARIMA and MLP Univariate Model Comparison:
+
+With respect to rolling window ASE, MLP model has lowest ASE than ARIMA model, fitted values also follows the trend in the original realization 
+
+``` {r ensemble  model}
+
+ensemble_uni_US  = (Coviddata_US.d1.ar7.forecasts$f + NN_uni_US_fitted[45:51])/2
+ensemble_uni_US
+#Plot
+ggplot() +
+  geom_line(aes(x=seq(1,55,1), y=Coviddata_US$new_cases, group = 1), 
+             color = "blue", size=1) +
+  geom_line(aes(x=seq(49,55,1), y=ensemble_uni_US, group = 1), 
+             color = "red", size=1) +
+  xlab("Date") +
+  ylab("New cases") +
+  ggtitle("Last 7 days Forecasts with ensemble")
+
+ensemble_uni_US_ASE = mean((Coviddata_US$new_cases[49:55] - ensemble_uni_US)^2)
+ensemble_uni_US_ASE
+## 8365608
+```
+
+### MULTIVARIATE ANALYSIS ###
+``` {r correlogram  model}
+
+corrgram(Covid_mobility_US, order=TRUE,
+         upper.panel=panel.cor, lower.panel=panel.pie, main="Covid 19 correlogram US")
+
+str(Covid_mobility_US)
+Covid_mobility_US_New1 = Covid_mobility_US[ , c('new_cases', 'totalcases', 'athomeus', 'notathomeus', 'num_tripsus')]
+
+Covid_mobility_US_New2 = Covid_mobility_US[ , c('new_cases', 'tripslessthan1mileus', 'trips1to3milesus', 'trips3to5milesus', 'trips5to10milesus', 'trips10to25milesus')]
+
+ggpairs(Covid_mobility_US_New1)
+
+ggpairs(Covid_mobility_US_New2)
+
+ccf(Covid_mobility_US$new_cases, Covid_mobility_US$totalcases)
+# lag 0
+
+ccf(Covid_mobility_US$new_cases, Covid_mobility_US$trips1to3miles)
+# lag -5 
+
+ccf(Covid_mobility_US$new_cases, Covid_mobility_US$athome)
+# lag -5
+
+ccf(Covid_mobility_US$new_cases, Covid_mobility_US$notathome)
+# lag -5
+
+ccf(Covid_mobility_US$new_cases, Covid_mobility_US$tripslessthan1mile)
+# lag -5
+
+```
+Based on the correlogram, 
+  new cases is correlated to total cases (0.86)
+  new cases is correlated with trips between 3 to 5 miles
+  new cases is correlated with trips between 1 to 3 miles
+  new cases is correlated with trips less than 1 mile
+  
+All mobility variables are correlated with number of new cases, but all of them are highly correlated with each other, including them in the model might result in multicollinearity issue. So decided to include one of the highly correlated mobility variable in the model.
+
+``` {r VAR multivariate  model}
+var_data_US = cbind(Covid_mobility_US$new_cases, Covid_mobility_US$totalcases,  Covid_mobility_US$trips1to3milesus)
+
+#VARSelect 
+VARselect(var_data_US,lag.max = 10, type = "both")
+
+#VAR with p = 10 lowest AIC
+new_cases_VAR_both_US = VAR(var_data_US,type = "both",p = 10)
+
+# predicted values
+var_both_US_fitted = fitted(new_cases_VAR_both_US)
+
+# Plot
+{plot(seq(1,55,1), Coviddata_US$new_cases, type = "l",xlim = c(0,55), ylab = "New cases", 
+     main = "Original VS Fitted", xlab="Date")
+lines(seq(11, 55,1), var_both_US_fitted[,1], type = "l", col = "red")}
+
+
+var_both_US_ase = mean((Coviddata_US$new_cases[11:55]-var_both_US_fitted[,1])^2)
+var_both_US_ase
+# Rolling window ASE : 2818322
+
+#### 7 day Forecast
+preds_var_both_7_US=predict(new_cases_VAR_both_US,n.ahead=7)
+
+# Plot
+{plot(seq(1,55,1), Coviddata_US$new_cases, type = "l",xlim = c(0,65), ylab = "New cases", 
+     main = "Next 7 days forecasts", xlab="Date",  ylim = c(0,100000))
+lines(seq(56, 62,1), preds_var_both_7_US$fcst$y1[,1], type = "l", col = "red")
+lines(seq(56, 62,1), preds_var_both_7_US$fcst$y1[,2], type = "l", col = "blue")
+lines(seq(56, 62,1), preds_var_both_7_US$fcst$y1[,3], type = "l", col = "blue")}
+
+
+#### 60 day Forecast
+
+preds_var_both_60_US=predict(new_cases_VAR_both_US,n.ahead=60)
+
+# Plot
+{plot(seq(1,55,1), Coviddata_US$new_cases, type = "l",xlim = c(0,115), 
+     ylim = c(0,200000),
+     xlab="Date",
+     ylab = "New cases", 
+     main = "Next 60 days forecasts")
+lines(seq(56, 115,1), preds_var_both_60_US$fcst$y1[,1], type = "l", col = "red")
+lines(seq(56, 115,1), preds_var_both_60_US$fcst$y1[,2], type = "l", col = "blue")
+lines(seq(56, 115,1), preds_var_both_60_US$fcst$y1[,3], type = "l", col = "blue")}
+
+```
+
+
+``` {r MLP multivariate  model}
+MLP_data = cbind(Covid_mobility_US$new_cases, Covid_mobility_US$totalcases,  Covid_mobility_US$trips3to5milesus)
+
+#####   Forecasting
+MLP_Coviddata_US = Covid_mobility_US
+MLP_Coviddata_US_DF = data.frame(totalcases = ts(MLP_Coviddata_US$totalcases),
+                                 trips1to3miles = ts(MLP_Coviddata_US$trips1to3milesus))
+
+# forecasting total cases
+fit.mlp_total_us = mlp(ts(MLP_Coviddata_US$totalcases),reps = 100,comb = "median")
+fit.mlp_total_us
+plot(fit.mlp_total_us)
+fore.mlp_7days_total_us = forecast(fit.mlp_total_us, h = 7)
+fore.mlp_60days_total_us = forecast(fit.mlp_total_us, h = 60)
+
+# forecasting trips 1 to 3 miles
+fit.mlp_trips1to3milesus = mlp(ts(MLP_Coviddata_US$trips1to3milesus),reps = 100,comb = "median")
+fit.mlp_trips1to3milesus
+plot(fit.mlp_trips1to3milesus)
+fore.mlp_7days_trips1to3milesus = forecast(fit.mlp_trips1to3milesus, h = 7)
+
+fore.mlp_60days_trips1to3milesus = forecast(fit.mlp_trips1to3milesus, h = 60)
+
+## multivariate forecasting next 7 days
+fit.mlp.US = mlp(ts(MLP_Coviddata_US$new_cases),reps = 100,comb = "median", 
+              xreg = MLP_Coviddata_US_DF)
+fit.mlp.US
+plot(fit.mlp.US)
+
+SMDF_7_US = data.frame(
+  totalcases = ts(c(MLP_Coviddata_US$totalcases, fore.mlp_7days_total_us$mean)),
+  trips1to3milesus = ts(c(MLP_Coviddata_US$trips1to3milesus, fore.mlp_7days_trips1to3milesus$mean)))
+  
+fore.mlp.US = forecast(fit.mlp.US, h = 7, xreg=SMDF_7_US)
+
+plot(fore.mlp.US)
+
+## multivariate forecasting next 60 days days
+
+SMDF_60_US = data.frame(
+  totalcases = ts(c(MLP_Coviddata_US$totalcases,fore.mlp_60days_total_us$mean)),
+  trips1to3milesus = ts(c(MLP_Coviddata_US$trips1to3miles,fore.mlp_60days_trips1to3milesus$mean)))
+
+fore.mlp.US = forecast(fit.mlp.US, h = 60, xreg=SMDF_60_US)
+
+plot(fore.mlp.US)
+
+## Calculate ASE
+NN_fitted_US = fitted(fore.mlp.US)
+
+{plot(seq(1,55,1), Coviddata_US$new_cases, type = "l",xlim = c(0,55), ylab = "New cases", 
+     main = "Original VS Fitted", size=2)
+lines(seq(5, 55,1), NN_fitted_US, type = "l", col = "red")}
+
+
+ggplot() +
+  geom_line(aes(x=seq(1,55,1), y=Coviddata_US$new_cases, group = 1), 
+             color = "blue", size=1) +
+  geom_line(aes(x=seq(5,55,1), y=NN_fitted_US, group = 1), 
+             color = "red", size=1) 
+  
+
+NN_ase_US = mean((MLP_Coviddata_US$new_cases[5:55]-NN_fitted_US)^2)
+NN_ase_US
+# Rolling window ASE is 9444360
+
+```
+
+### VAR and MLP Multivariate Model Comparison:
+
+With respect to rolling window ASE, VAR model has lowest ASE than MLP model, fitted values also follows the trend in the original realization 
+
+``` {r ensemble multivariate model}
+
+ensemble_multi  = (var_both_US_fitted[,1][1:45] + NN_fitted_US[7:51])/2
+ensemble_multi
+#Plot
+ggplot() +
+  geom_line(aes(x=seq(1,55,1), y=Coviddata_US$new_cases, group = 1), 
+             color = "blue", size=1) +
+  geom_line(aes(x=seq(11,55,1), y=ensemble_multi, group = 1), 
+             color = "red", size=1) +
+  xlab("Date") +
+  ylab("New cases") +
+  ggtitle("Last 7 days Forecasts with ensemble")
+
+ensemble_multi_ASE = mean((Coviddata_US$new_cases[11:55] - ensemble_multi)^2)
+ensemble_multi_ASE
+## 4543925
+```
